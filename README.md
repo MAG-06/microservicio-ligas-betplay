@@ -1,64 +1,84 @@
-# pronosticador-api
+# microservicio-ligas-betplay
 
-Microservicio en **TypeScript + Node + Fastify** que trae las ligas y partidos (con cuotas) de BetPlay
-usando la API de Kambi, los limpia y los expone como JSON. Es la migracion del script `betplay_api.py`.
+Microservicio en **TypeScript + Fastify** que consulta la API de Kambi (proveedor de cuotas de BetPlay), extrae todas las ligas de futbol disponibles, las clasifica y las guarda en una tabla `ligas_betplay` en Supabase.
+
+Diseñado para ser llamado por **n8n** (o cualquier cron) via `POST /api/sync`.
 
 ## Requisitos
-- Node 20 o superior (`node -v`)
+- Node 20 o superior
 
-## Arrancar
+## Setup
+
 ```bash
 npm install
 cp .env.example .env     # en Windows: copy .env.example .env
-npm run dev              # modo desarrollo, se reinicia solo al guardar
 ```
-Probar en el navegador:
-- http://127.0.0.1:8000/api/ligas
-- http://127.0.0.1:8000/api/ligas?tipo=all&con_partidos=true
-- http://127.0.0.1:8000/api/ligas/1000449742/partidos?dia=today
 
-Los parametros son los mismos que tenia la version de Python
-(`tipo`, `con_partidos`, `dia` = all | today | tomorrow | YYYY-MM-DD).
+Edita `.env` con tus credenciales:
 
-## Scripts
-| Comando | Que hace |
-|---|---|
-| `npm run dev` | servidor en desarrollo (tsx watch) |
-| `npm run build` | compila a `dist/` |
-| `npm start` | corre lo compilado (`dist/server.js`) |
-| `npm test` | corre los tests (no usan internet) |
-| `npm run typecheck` | revisa tipos sin compilar |
+```
+PORT=8000
+HOST=0.0.0.0
+SUPABASE_URL=https://tu-proyecto.supabase.co
+SUPABASE_KEY=tu-service-role-key
+SYNC_TOKEN=un-token-secreto
+```
 
-## Arquitectura por capas
+## Uso
+
+```bash
+npm run dev    # desarrollo con hot-reload
+npm run build  # compila a dist/
+npm start      # produccion
+```
+
+### Endpoint
+
+```
+POST /api/sync
+Authorization: Bearer <SYNC_TOKEN>
+```
+
+Respuesta:
+```json
+{ "sincronizadas": 165 }
+```
+
+## Tabla en Supabase
+
+Tabla `ligas_betplay` con las columnas:
+
+| Columna | Tipo | Descripcion |
+|---|---|---|
+| id | int8 (PK) | ID de la liga en Kambi |
+| nombre | text | Nombre de la liga |
+| pais | text (nullable) | Pais (null para torneos internacionales) |
+| tipo | text | normal, femenino, juvenil_reservas, esports, especiales |
+| partidos | int8 | Cantidad de eventos activos en BetPlay |
+| url | text | Ruta de Kambi para consultar partidos de esa liga |
+
+## Estructura
+
 ```
 src/
-├── server.ts              punto de entrada (levanta el servidor)
-├── app.ts                 arma la app: conecta las piezas y registra rutas
-├── config/env.ts          constantes: URL de Kambi, headers, TTL, zona horaria
-├── routes/                PRESENTACION: recibe request, valida con Zod, llama al service
-├── services/              NEGOCIO: filtrar por tipo/dia, ordenar, reglas
-├── clients/kambi.client   INTEGRACION: unico que hace fetch a Kambi
-├── mappers/               convierte JSON crudo de Kambi -> modelos limpios
-├── cache/                 cache en memoria (cambiable por Redis)
-├── errors/app-error.ts    errores con codigo HTTP (404, 400, 502)
-└── types/                 interfaces (formato Kambi y modelos propios)
-tests/                     mapper, services y API con datos falsos
+  app.ts                       Punto de entrada + endpoint POST /api/sync
+  config/env.ts                Configuracion (Kambi, Supabase, token)
+  clients/kambi.client.ts      Fetch a la API de Kambi
+  clients/supabase.client.ts   Cliente de Supabase
+  mappers/kambi.mapper.ts      JSON crudo de Kambi -> lista de ligas
+  services/sync.service.ts     Fetch + map + upsert a Supabase
+  types/dominio.ts             Tipo Liga
+  types/kambi.types.ts         Tipos del JSON de Kambi
 ```
-Flujo: `route -> service -> client (Kambi)` y `service -> cache`, `service -> mapper`.
-Cada capa solo habla con la de abajo.
 
-## Como crecer
-- **Otra casa de apuestas:** crea otro client + mapper que cumpla la interfaz `ProveedorCuotas`.
-- **Redis:** crea una clase que implemente `Cache` y pasala en `buildApp({ cache })`.
-- **Produccion:** cambia `origin: "*"` de CORS en `app.ts` por tu dominio.
+## Flujo
 
-## Equivalencias con el script de Python
-| Python | TypeScript |
-|---|---|
-| `betplay_api.py` (todo junto) | separado en config / client / mapper / service / routes |
-| `cached()` | `MemoryCache.getOrSet()` |
-| `clasificar`, `_liga`, `aplanar_ligas` | `mappers/kambi.mapper.ts` |
-| `parsear_partido`, `_inicio` | `mappers/kambi.mapper.ts` |
-| `filtrar_dia` | `services/partido.service.ts` |
-| `HTTPException` | `AppError` + error handler en `app.ts` |
-| `@app.get(...)` | `app.get(...)` en `routes/` |
+```
+n8n (cron diario) -> POST /api/sync -> Kambi API -> mapper -> upsert Supabase
+```
+
+## Deploy en Render
+
+- **Build command:** `npm install && npm run build`
+- **Start command:** `npm start`
+- **Variables de entorno:** `SUPABASE_URL`, `SUPABASE_KEY`, `SYNC_TOKEN`, `HOST=0.0.0.0`
